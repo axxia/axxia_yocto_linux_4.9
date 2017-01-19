@@ -62,6 +62,9 @@ static DEFINE_SPINLOCK(rio_io_lock);
 #define RIO_NWRITE_R            0x40
 #define RIO_SWRITE              0x80
 
+#define RIO_PHY_PARALLEL        0x00
+#define RIO_PHY_SERIAL          0x01
+
 int
 axxia_rio_is_x9(void)
 {
@@ -899,10 +902,10 @@ static void axxia_init_port_data(struct rio_mport *mport)
 #endif
 	/* Probe the master port phy type */
 	__rio_local_read_config_32(mport, RIO_CCSR(priv->port_ndx), &ccsr);
-	mport->phy_type = (ccsr & 1) ? RIO_PHY_SERIAL : RIO_PHY_PARALLEL;
+	mport->phys_rmap = (ccsr & 1) ? RIO_PHY_SERIAL : RIO_PHY_PARALLEL;
 	dev_dbg(priv->dev, "RapidIO PHY type: %s\n",
-		 (mport->phy_type == RIO_PHY_PARALLEL) ? "parallel" :
-		 ((mport->phy_type == RIO_PHY_SERIAL) ? "serial" :
+		 (mport->phys_rmap == RIO_PHY_PARALLEL) ? "parallel" :
+		 ((mport->phys_rmap == RIO_PHY_SERIAL) ? "serial" :
 		  "unknown"));
 
 	__rio_local_read_config_32(mport, RIO_PEF_CAR, &data);
@@ -1004,7 +1007,7 @@ static int rio_start_port(struct rio_mport *mport)
 		ccsr |= RIO_CCSR_PD;
 		__rio_local_write_config_32(mport, RIO_CCSR(priv->port_ndx),
 						ccsr);
-		switch (mport->phy_type) {
+		switch (mport->phys_rmap) {
 		case RIO_PHY_SERIAL:
 			/* Set 1x lane */
 			ccsr &= ~RIO_CCSR_PWO;
