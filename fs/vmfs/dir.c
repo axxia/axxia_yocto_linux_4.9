@@ -35,7 +35,7 @@ static int vmfs_mkdir(struct inode *, struct dentry *, umode_t);
 static int vmfs_rmdir(struct inode *, struct dentry *);
 static int vmfs_unlink(struct inode *, struct dentry *);
 static int vmfs_rename(struct inode *, struct dentry *,
-		       struct inode *, struct dentry *);
+		       struct inode *, struct dentry *, unsigned int);
 static int vmfs_make_node(struct inode *, struct dentry *, umode_t, dev_t);
 static int vmfs_link(struct dentry *, struct inode *, struct dentry *);
 
@@ -572,11 +572,14 @@ static int vmfs_unlink(struct inode *dir, struct dentry *dentry)
 
 static int
 vmfs_rename(struct inode *old_dir, struct dentry *old_dentry,
-	    struct inode *new_dir, struct dentry *new_dentry)
+	    struct inode *new_dir, struct dentry *new_dentry, unsigned int flags)
 {
 	int error;
 
 	VERBOSE("\n");
+
+	if (flags)
+		return -EINVAL;
 
 	/*
 	 * Close any open files, and check whether to delete the
