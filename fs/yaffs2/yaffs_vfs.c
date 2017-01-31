@@ -1029,10 +1029,7 @@ static ssize_t yaffs_listxattr(struct dentry * dentry, char *buff, size_t size)
 
 static const struct inode_operations yaffs_file_inode_operations = {
 	.setattr = yaffs_setattr,
-	.setxattr = yaffs_setxattr,
-	.getxattr = yaffs_getxattr,
 	.listxattr = yaffs_listxattr,
-	.removexattr = yaffs_removexattr,
 };
 
 
@@ -1125,10 +1122,7 @@ static const struct inode_operations yaffs_symlink_inode_operations = {
 	.follow_link = yaffs_follow_link,
 #endif
 	.setattr = yaffs_setattr,
-	.setxattr = yaffs_setxattr,
-	.getxattr = yaffs_getxattr,
 	.listxattr = yaffs_listxattr,
-	.removexattr = yaffs_removexattr,
 };
 
 #ifdef YAFFS_USE_OWN_IGET
@@ -1493,11 +1487,15 @@ static int yaffs_symlink(struct inode *dir, struct dentry *dentry,
  * NB: POSIX says you can rename an object over an old object of the same name
  */
 static int yaffs_rename(struct inode *old_dir, struct dentry *old_dentry,
-			struct inode *new_dir, struct dentry *new_dentry)
+			struct inode *new_dir, struct dentry *new_dentry,
+			unsigned int flags)
 {
 	struct yaffs_dev *dev;
 	int ret_val = YAFFS_FAIL;
 	struct yaffs_obj *target;
+
+	if (flags)
+		return -EINVAL;
 
 	yaffs_trace(YAFFS_TRACE_OS, "yaffs_rename");
 	dev = yaffs_inode_to_obj(old_dir)->my_dev;
@@ -1581,10 +1579,7 @@ static const struct inode_operations yaffs_dir_inode_operations = {
 	.mknod = yaffs_mknod,
 	.rename = yaffs_rename,
 	.setattr = yaffs_setattr,
-	.setxattr = yaffs_setxattr,
-	.getxattr = yaffs_getxattr,
 	.listxattr = yaffs_listxattr,
-	.removexattr = yaffs_removexattr,
 };
 
 /*-----------------------------------------------------------------*/
@@ -2771,7 +2766,34 @@ static struct dentry *yaffs_make_root(struct inode *inode)
 }
 
 
+static int yaffs_xattr_get(const struct xattr_handler *handler,
+			    struct dentry *dentry, struct inode *inode,
+			    const char *name, void *buff, size_t size)
+{
+	return yaffs_getxattr(dentry, inode, name, buff, size);
+}
 
+static int yaffs_xattr_set(const struct xattr_handler *handler,
+			   struct dentry *dentry, struct inode *inode,
+			   const char *name, const void *value, size_t size,
+			   int flags)
+{
+	if (value)
+		return yaffs_setxattr(dentry, inode, name, value, size, flags);
+	else
+		return yaffs_removexattr(dentry, name);
+}
+
+static const struct xattr_handler yaffs_xattr_handler = {
+	.prefix = "", /* match anything */
+	.get = yaffs_xattr_get,
+	.set = yaffs_xattr_set,
+};
+
+static const struct xattr_handler *yaffs_xattr_handlers[] = {
+	&yaffs_xattr_handler,
+	NULL
+};
 
 static struct super_block *yaffs_internal_read_super(int yaffs_version,
 						     struct super_block *sb,
@@ -2805,6 +2827,7 @@ static struct super_block *yaffs_internal_read_super(int yaffs_version,
 
 	sb->s_magic = YAFFS_MAGIC;
 	sb->s_op = &yaffs_super_ops;
+	sb->s_xattr = yaffs_xattr_handlers;
 	sb->s_flags |= MS_NOATIME;
 
 	read_only = ((sb->s_flags & MS_RDONLY) != 0);
