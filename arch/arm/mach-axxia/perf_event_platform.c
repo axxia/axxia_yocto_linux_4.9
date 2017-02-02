@@ -34,8 +34,8 @@
 
 #include <asm/cputype.h>
 #include <asm/irq_regs.h>
-#include <asm/pmu.h>
 
+#include <linux/perf_event.h>
 #include <linux/kthread.h>
 #include <linux/sched.h>
 
