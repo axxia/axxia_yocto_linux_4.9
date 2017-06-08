@@ -574,10 +574,8 @@ static void do_current_softirqs(void)
 			do_single_softirq(i);
 		}
 		softirq_clr_runner(i);
-		WARN_ON(current->softirq_nestcnt != 1);
-		local_irq_enable();
 		unlock_softirq(i);
-		local_irq_disable();
+		WARN_ON(current->softirq_nestcnt != 1);
 	}
 }
 
