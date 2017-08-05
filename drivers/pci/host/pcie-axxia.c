@@ -580,12 +580,15 @@ static void axxia_dw_pcie_handle_msix_irq(struct pcie_port *pp, int offset)
 	}
 }
 
-static void axxia_pcie_msi_irq_handler(unsigned int irq, struct irq_desc *desc)
+static void axxia_pcie_msi_irq_handler(struct irq_desc *desc)
 {
 	struct pcie_port *pp = irq_desc_get_handler_data(desc);
-	u32 offset = irq - pp->msi_irqs[0];
+	unsigned int irq;
+	u32 offset;
 	struct irq_chip *chip = irq_desc_get_chip(desc);
 
+	irq = irq_desc_get_irq(desc);
+	offset = irq - pp->msi_irqs[0];
 	dev_dbg(pp->dev, "%s, irq %d i %d\n", __func__, irq, offset);
 
 	/*
