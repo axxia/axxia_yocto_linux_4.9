@@ -60,6 +60,8 @@
 #define ARM_SMCCC_QUIRK_NONE		0
 #define ARM_SMCCC_QUIRK_QCOM_A6		1 /* Save/restore register a6 */
 
+#define ARM_SMCCC_UNKNOWN		0xffffffff
+
 #ifndef __ASSEMBLY__
 
 #include <linux/linkage.h>
