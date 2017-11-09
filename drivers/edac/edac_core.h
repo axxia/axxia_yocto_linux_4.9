@@ -481,8 +481,15 @@ extern int edac_device_add_device(struct edac_device_ctl_info *edac_dev);
 extern struct edac_device_ctl_info *edac_device_del_device(struct device *dev);
 extern void edac_device_handle_ue(struct edac_device_ctl_info *edac_dev,
 				int inst_nr, int block_nr, const char *msg);
+extern void edac_device_handle_multi_ue(struct edac_device_ctl_info *edac_dev,
+				int inst_nr, int block_nr, int events,
+				const char *msg);
 extern void edac_device_handle_ce(struct edac_device_ctl_info *edac_dev,
 				int inst_nr, int block_nr, const char *msg);
+extern void edac_device_handle_multi_ce(struct edac_device_ctl_info *edac_dev,
+				int inst_nr, int block_nr, int events,
+				const char *msg);
+
 extern int edac_device_alloc_index(void);
 extern const char *edac_layer_name[];
 
