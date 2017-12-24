@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2016 Junjiro R. Okajima
+ * Copyright (C) 2005-2017 Junjiro R. Okajima
  *
  * This program, aufs is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -32,7 +32,7 @@ void au_si_free(struct kobject *kobj)
 
 	sbinfo = container_of(kobj, struct au_sbinfo, si_kobj);
 	for (i = 0; i < AuPlink_NHASH; i++)
-		AuDebugOn(!hlist_empty(&sbinfo->si_plink[i].head));
+		AuDebugOn(!hlist_bl_empty(sbinfo->si_plink + i));
 	AuDebugOn(atomic_read(&sbinfo->si_nowait.nw_len));
 
 	AuDebugOn(percpu_counter_sum(&sbinfo->si_ninodes));
@@ -44,15 +44,11 @@ void au_si_free(struct kobject *kobj)
 	au_br_free(sbinfo);
 	au_rw_write_unlock(&sbinfo->si_rwsem);
 
-	au_delayed_kfree(sbinfo->si_branch);
-	for (i = 0; i < AU_NPIDMAP; i++)
-		if (sbinfo->au_si_pid.pid_bitmap[i])
-			au_delayed_kfree(sbinfo->au_si_pid.pid_bitmap[i]);
-	mutex_destroy(&sbinfo->au_si_pid.pid_mtx);
+	kfree(sbinfo->si_branch);
 	mutex_destroy(&sbinfo->si_xib_mtx);
 	AuRwDestroy(&sbinfo->si_rwsem);
 
-	au_delayed_kfree(sbinfo);
+	kfree(sbinfo);
 }
 
 int au_si_alloc(struct super_block *sb)
@@ -76,7 +72,6 @@ int au_si_alloc(struct super_block *sb)
 
 	au_nwt_init(&sbinfo->si_nowait);
 	au_rw_init_wlock(&sbinfo->si_rwsem);
-	mutex_init(&sbinfo->au_si_pid.pid_mtx);
 
 	percpu_counter_init(&sbinfo->si_ninodes, 0, GFP_NOFS);
 	percpu_counter_init(&sbinfo->si_nfiles, 0, GFP_NOFS);
@@ -100,7 +95,7 @@ int au_si_alloc(struct super_block *sb)
 	sbinfo->si_xino_brid = -1;
 	/* leave si_xib_last_pindex and si_xib_next_bit */
 
-	au_sphl_init(&sbinfo->si_aopen);
+	INIT_HLIST_BL_HEAD(&sbinfo->si_aopen);
 
 	sbinfo->si_rdcache = msecs_to_jiffies(AUFS_RDCACHE_DEF * MSEC_PER_SEC);
 	sbinfo->si_rdblk = AUFS_RDBLK_DEF;
@@ -108,11 +103,11 @@ int au_si_alloc(struct super_block *sb)
 	sbinfo->si_dirwh = AUFS_DIRWH_DEF;
 
 	for (i = 0; i < AuPlink_NHASH; i++)
-		au_sphl_init(sbinfo->si_plink + i);
+		INIT_HLIST_BL_HEAD(sbinfo->si_plink + i);
 	init_waitqueue_head(&sbinfo->si_plink_wq);
 	spin_lock_init(&sbinfo->si_plink_maint_lock);
 
-	au_sphl_init(&sbinfo->si_files);
+	INIT_HLIST_BL_HEAD(&sbinfo->si_files);
 
 	/* with getattr by default */
 	sbinfo->si_iop_array = aufs_iop;
@@ -124,9 +119,9 @@ int au_si_alloc(struct super_block *sb)
 	return 0; /* success */
 
 out_br:
-	au_delayed_kfree(sbinfo->si_branch);
+	kfree(sbinfo->si_branch);
 out_sbinfo:
-	au_delayed_kfree(sbinfo);
+	kfree(sbinfo);
 out:
 	return err;
 }
@@ -306,50 +301,4 @@ void aufs_read_and_write_unlock2(struct dentry *d1, struct dentry *d2)
 {
 	di_write_unlock2(d1, d2);
 	si_read_unlock(d1->d_sb);
-}
-
-/* ---------------------------------------------------------------------- */
-
-static void si_pid_alloc(struct au_si_pid *au_si_pid, int idx)
-{
-	unsigned long *p;
-
-	BUILD_BUG_ON(sizeof(unsigned long) !=
-		     sizeof(*au_si_pid->pid_bitmap));
-
-	mutex_lock(&au_si_pid->pid_mtx);
-	p = au_si_pid->pid_bitmap[idx];
-	while (!p) {
-		/*
-		 * bad approach.
-		 * but keeping 'si_pid_set()' void is more important.
-		 */
-		p = kcalloc(BITS_TO_LONGS(AU_PIDSTEP),
-			    sizeof(*au_si_pid->pid_bitmap),
-			    GFP_NOFS);
-		if (p)
-			break;
-		cond_resched();
-	}
-	au_si_pid->pid_bitmap[idx] = p;
-	mutex_unlock(&au_si_pid->pid_mtx);
-}
-
-void si_pid_set(struct super_block *sb)
-{
-	pid_t bit;
-	int idx;
-	unsigned long *bitmap;
-	struct au_si_pid *au_si_pid;
-
-	si_pid_idx_bit(&idx, &bit);
-	au_si_pid = &au_sbi(sb)->au_si_pid;
-	bitmap = au_si_pid->pid_bitmap[idx];
-	if (!bitmap) {
-		si_pid_alloc(au_si_pid, idx);
-		bitmap = au_si_pid->pid_bitmap[idx];
-	}
-	AuDebugOn(test_bit(bit, bitmap));
-	set_bit(bit, bitmap);
-	/* smp_mb(); */
 }

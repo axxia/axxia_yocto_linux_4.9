@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2010-2016 Junjiro R. Okajima
+ * Copyright (C) 2010-2017 Junjiro R. Okajima
  *
  * This program, aufs is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -39,7 +39,7 @@ struct au_dynop {
 
 struct au_dykey {
 	union {
-		struct hlist_node	dk_hnode;
+		struct hlist_bl_node	dk_hnode;
 		struct rcu_head		dk_rcu;
 	};
 	struct au_dynop		dk_op;

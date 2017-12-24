@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2016 Junjiro R. Okajima
+ * Copyright (C) 2005-2017 Junjiro R. Okajima
  *
  * This program, aufs is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -25,6 +25,7 @@
 #ifdef __KERNEL__
 
 #include <linux/dcache.h>
+#include "dirren.h"
 #include "rwsem.h"
 
 struct au_hdentry {
@@ -38,10 +39,7 @@ struct au_dinfo {
 	struct au_rwsem		di_rwsem;
 	aufs_bindex_t		di_btop, di_bbot, di_bwh, di_bdiropq;
 	unsigned char		di_tmpfile; /* to allow the different name */
-	union {
-		struct au_hdentry	*di_hdentry;
-		struct llist_node	di_lnode;	/* delayed free */
-	};
+	struct au_hdentry	*di_hdentry;
 } ____cacheline_aligned_in_smp;
 
 /* ---------------------------------------------------------------------- */
@@ -49,11 +47,24 @@ struct au_dinfo {
 /* flags for au_lkup_dentry() */
 #define AuLkup_ALLOW_NEG	1
 #define AuLkup_IGNORE_PERM	(1 << 1)
+#define AuLkup_DIRREN		(1 << 2)
 #define au_ftest_lkup(flags, name)	((flags) & AuLkup_##name)
 #define au_fset_lkup(flags, name) \
 	do { (flags) |= AuLkup_##name; } while (0)
 #define au_fclr_lkup(flags, name) \
 	do { (flags) &= ~AuLkup_##name; } while (0)
+
+#ifndef CONFIG_AUFS_DIRREN
+#undef AuLkup_DIRREN
+#define AuLkup_DIRREN 0
+#endif
+
+struct au_do_lookup_args {
+	unsigned int		flags;
+	mode_t			type;
+	struct qstr		whname, *name;
+	struct au_dr_lookup	dirren;
+};
 
 /* ---------------------------------------------------------------------- */
 
