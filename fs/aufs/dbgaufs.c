@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2016 Junjiro R. Okajima
+ * Copyright (C) 2005-2017 Junjiro R. Okajima
  *
  * This program, aufs is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -41,7 +41,7 @@ struct dbgaufs_arg {
 static int dbgaufs_xi_release(struct inode *inode __maybe_unused,
 			      struct file *file)
 {
-	au_delayed_kfree(file->private_data);
+	kfree(file->private_data);
 	return 0;
 }
 
@@ -103,7 +103,7 @@ struct dbgaufs_plink_arg {
 static int dbgaufs_plink_release(struct inode *inode __maybe_unused,
 				 struct file *file)
 {
-	au_delayed_free_page((unsigned long)file->private_data);
+	free_page((unsigned long)file->private_data);
 	return 0;
 }
 
@@ -114,7 +114,7 @@ static int dbgaufs_plink_open(struct inode *inode, struct file *file)
 	struct dbgaufs_plink_arg *p;
 	struct au_sbinfo *sbinfo;
 	struct super_block *sb;
-	struct au_sphlhead *sphl;
+	struct hlist_bl_head *hbl;
 
 	err = -ENOMEM;
 	p = (void *)get_zeroed_page(GFP_NOFS);
@@ -134,10 +134,9 @@ static int dbgaufs_plink_open(struct inode *inode, struct file *file)
 		limit -= n;
 
 		sum = 0;
-		for (i = 0, sphl = sbinfo->si_plink;
-		     i < AuPlink_NHASH;
-		     i++, sphl++) {
-			n = au_sphl_count(sphl);
+		for (i = 0, hbl = sbinfo->si_plink; i < AuPlink_NHASH;
+		     i++, hbl++) {
+			n = au_hbl_count(hbl);
 			sum += n;
 
 			n = snprintf(p->a + p->n, limit, "%lu ", n);
@@ -167,7 +166,7 @@ static int dbgaufs_plink_open(struct inode *inode, struct file *file)
 	goto out; /* success */
 
 out_free:
-	au_delayed_free_page((unsigned long)p);
+	free_page((unsigned long)p);
 out:
 	return err;
 }

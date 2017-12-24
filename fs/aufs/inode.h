@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2016 Junjiro R. Okajima
+ * Copyright (C) 2005-2017 Junjiro R. Okajima
  *
  * This program, aufs is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -35,10 +35,7 @@ struct au_hnotify {
 	/* never use fsnotify_add_vfsmount_mark() */
 	struct fsnotify_mark		hn_mark;
 #endif
-	union {
-		struct inode		*hn_aufs_inode;	/* no get/put */
-		struct llist_node	hn_lnode;	/* delayed free */
-	};
+	struct inode		*hn_aufs_inode;	/* no get/put */
 #endif
 } ____cacheline_aligned_in_smp;
 
@@ -81,10 +78,7 @@ struct au_iinfo {
 struct au_icntnr {
 	struct au_iinfo iinfo;
 	struct inode vfs_inode;
-	union {
-		struct hlist_node	plink;
-		struct llist_node	lnode;	/* delayed free */
-	};
+	struct hlist_bl_node plink;
 } ____cacheline_aligned_in_smp;
 
 /* au_pin flags */
@@ -210,7 +204,8 @@ struct au_icpup_args {
 int au_pin_and_icpup(struct dentry *dentry, struct iattr *ia,
 		     struct au_icpup_args *a);
 
-int au_h_path_getattr(struct dentry *dentry, int force, struct path *h_path);
+int au_h_path_getattr(struct dentry *dentry, int force, struct path *h_path,
+		      int locked);
 
 /* i_op_add.c */
 int au_may_add(struct dentry *dentry, aufs_bindex_t bindex,
@@ -238,7 +233,8 @@ int aufs_rmdir(struct inode *dir, struct dentry *dentry);
 /* i_op_ren.c */
 int au_wbr(struct dentry *dentry, aufs_bindex_t btgt);
 int aufs_rename(struct inode *src_dir, struct dentry *src_dentry,
-		struct inode *dir, struct dentry *dentry);
+		struct inode *dir, struct dentry *dentry,
+		unsigned int flags);
 
 /* iinfo.c */
 struct inode *au_h_iptr(struct inode *inode, aufs_bindex_t bindex);
@@ -311,17 +307,11 @@ AuStubVoid(au_plink_half_refresh, struct super_block *sb, aufs_bindex_t br_id);
 int au_cpup_xattr(struct dentry *h_dst, struct dentry *h_src, int ignore_flags,
 		  unsigned int verbose);
 ssize_t aufs_listxattr(struct dentry *dentry, char *list, size_t size);
-ssize_t aufs_getxattr(struct dentry *dentry, struct inode *inode,
-		      const char *name, void *value, size_t size);
-int aufs_setxattr(struct dentry *dentry, struct inode *inode, const char *name,
-		  const void *value, size_t size, int flags);
-int aufs_removexattr(struct dentry *dentry, const char *name);
-
-/* void au_xattr_init(struct super_block *sb); */
+void au_xattr_init(struct super_block *sb);
 #else
 AuStubInt0(au_cpup_xattr, struct dentry *h_dst, struct dentry *h_src,
 	   int ignore_flags, unsigned int verbose);
-/* AuStubVoid(au_xattr_init, struct super_block *sb); */
+AuStubVoid(au_xattr_init, struct super_block *sb);
 #endif
 
 #ifdef CONFIG_FS_POSIX_ACL
@@ -332,11 +322,10 @@ int aufs_set_acl(struct inode *inode, struct posix_acl *acl, int type);
 #if IS_ENABLED(CONFIG_AUFS_XATTR) || IS_ENABLED(CONFIG_FS_POSIX_ACL)
 enum {
 	AU_XATTR_SET,
-	AU_XATTR_REMOVE,
 	AU_ACL_SET
 };
 
-struct au_srxattr {
+struct au_sxattr {
 	int type;
 	union {
 		struct {
@@ -346,16 +335,13 @@ struct au_srxattr {
 			int		flags;
 		} set;
 		struct {
-			const char	*name;
-		} remove;
-		struct {
 			struct posix_acl *acl;
 			int		type;
 		} acl_set;
 	} u;
 };
-ssize_t au_srxattr(struct dentry *dentry, struct inode *inode,
-		   struct au_srxattr *arg);
+ssize_t au_sxattr(struct dentry *dentry, struct inode *inode,
+		  struct au_sxattr *arg);
 #endif
 
 /* ---------------------------------------------------------------------- */
@@ -689,6 +675,16 @@ static inline void au_hn_inode_lock_nested(struct au_hinode *hdir,
 	inode_lock_nested(hdir->hi_inode, sc);
 	au_hn_suspend(hdir);
 }
+
+#if 0 /* unused */
+#include "vfsub.h"
+static inline void au_hn_inode_lock_shared_nested(struct au_hinode *hdir,
+						  unsigned int sc)
+{
+	vfsub_inode_lock_shared_nested(hdir->hi_inode, sc);
+	au_hn_suspend(hdir);
+}
+#endif
 
 static inline void au_hn_inode_unlock(struct au_hinode *hdir)
 {
