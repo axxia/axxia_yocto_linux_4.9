@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2016 Junjiro R. Okajima
+ * Copyright (C) 2005-2017 Junjiro R. Okajima
  *
  * This program, aufs is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,8 +26,8 @@
 
 #include <linux/fs.h>
 #include <linux/kobject.h>
+#include "hbl.h"
 #include "rwsem.h"
-#include "spl.h"
 #include "wkq.h"
 
 /* policies to select one among multiple writable branches */
@@ -79,13 +79,6 @@ struct au_fhsm {
 #endif
 };
 
-#define AU_PIDSTEP	(int)(BITS_TO_LONGS(PID_MAX_DEFAULT) * BITS_PER_LONG)
-#define AU_NPIDMAP	(int)DIV_ROUND_UP(PID_MAX_LIMIT, AU_PIDSTEP)
-struct au_si_pid {
-	unsigned long	*pid_bitmap[AU_NPIDMAP];
-	struct mutex	pid_mtx;
-};
-
 struct au_branch;
 struct au_sbinfo {
 	/* nowait tasks in the system-wide workqueue */
@@ -96,9 +89,6 @@ struct au_sbinfo {
 	 * rwsem for au_sbinfo is necessary.
 	 */
 	struct au_rwsem		si_rwsem;
-
-	/* prevent recursive locking in deleting inode */
-	struct au_si_pid	au_si_pid;
 
 	/*
 	 * dirty approach to protect sb->sb_inodes and ->s_files (gone) from
@@ -159,7 +149,7 @@ struct au_sbinfo {
 #endif
 
 	/* dirty trick to suppoer atomic_open */
-	struct au_sphlhead	si_aopen;
+	struct hlist_bl_head	si_aopen;
 
 	/* vdir parameters */
 	unsigned long		si_rdcache;	/* max cache time in jiffies */
@@ -175,13 +165,13 @@ struct au_sbinfo {
 	unsigned int		si_dirwh;
 
 	/* pseudo_link list */
-	struct au_sphlhead	si_plink[AuPlink_NHASH];
+	struct hlist_bl_head	si_plink[AuPlink_NHASH];
 	wait_queue_head_t	si_plink_wq;
 	spinlock_t		si_plink_maint_lock;
 	pid_t			si_plink_maint_pid;
 
 	/* file list */
-	struct au_sphlhead	si_files;
+	struct hlist_bl_head	si_files;
 
 	/* with/without getattr, brother of sb->s_d_op */
 	struct inode_operations *si_iop_array;
@@ -203,7 +193,7 @@ struct au_sbinfo {
 #endif
 
 #ifdef CONFIG_AUFS_SBILIST
-	struct hlist_node	si_list;
+	struct hlist_bl_node	si_list;
 #endif
 
 	/* dirty, necessary for unmounting, sysfs and sysrq */
@@ -255,6 +245,7 @@ static inline unsigned char au_do_ftest_si(struct au_sbinfo *sbi,
 #define AuLock_IW		(1 << 2)	/* write-lock inode */
 #define AuLock_FLUSH		(1 << 3)	/* wait for 'nowait' tasks */
 #define AuLock_DIRS		(1 << 4)	/* target is a pair of dirs */
+						/* except RENAME_EXCHANGE */
 #define AuLock_NOPLM		(1 << 5)	/* return err in plm mode */
 #define AuLock_NOPLMW		(1 << 6)	/* wait for plm mode ends */
 #define AuLock_GEN		(1 << 7)	/* test digen/iigen */
@@ -377,32 +368,32 @@ AuStub(int, au_busy_or_stale, return -EBUSY, void)
 
 #ifdef CONFIG_AUFS_SBILIST
 /* module.c */
-extern struct au_sphlhead au_sbilist;
+extern struct hlist_bl_head au_sbilist;
 
 static inline void au_sbilist_init(void)
 {
-	au_sphl_init(&au_sbilist);
+	INIT_HLIST_BL_HEAD(&au_sbilist);
 }
 
 static inline void au_sbilist_add(struct super_block *sb)
 {
-	au_sphl_add(&au_sbi(sb)->si_list, &au_sbilist);
+	au_hbl_add(&au_sbi(sb)->si_list, &au_sbilist);
 }
 
 static inline void au_sbilist_del(struct super_block *sb)
 {
-	au_sphl_del(&au_sbi(sb)->si_list, &au_sbilist);
+	au_hbl_del(&au_sbi(sb)->si_list, &au_sbilist);
 }
 
 #ifdef CONFIG_AUFS_MAGIC_SYSRQ
 static inline void au_sbilist_lock(void)
 {
-	spin_lock(&au_sbilist.spin);
+	hlist_bl_lock(&au_sbilist);
 }
 
 static inline void au_sbilist_unlock(void)
 {
-	spin_unlock(&au_sbilist.spin);
+	hlist_bl_unlock(&au_sbilist);
 }
 #define AuGFP_SBILIST	GFP_ATOMIC
 #else
@@ -440,42 +431,30 @@ static inline void dbgaufs_si_null(struct au_sbinfo *sbinfo)
 
 /* ---------------------------------------------------------------------- */
 
-static inline void si_pid_idx_bit(int *idx, pid_t *bit)
-{
-	/* the origin of pid is 1, but the bitmap's is 0 */
-	*bit = current->pid - 1;
-	*idx = *bit / AU_PIDSTEP;
-	*bit %= AU_PIDSTEP;
-}
+/* current->atomic_flags */
+/* this value should never corrupt the ones defined in linux/sched.h */
+#define PFA_AUFS	7
+
+TASK_PFA_TEST(AUFS, test_aufs)	/* task_test_aufs */
+TASK_PFA_SET(AUFS, aufs)	/* task_set_aufs */
+TASK_PFA_CLEAR(AUFS, aufs)	/* task_clear_aufs */
 
 static inline int si_pid_test(struct super_block *sb)
 {
-	pid_t bit;
-	int idx;
-	unsigned long *bitmap;
-
-	si_pid_idx_bit(&idx, &bit);
-	bitmap = au_sbi(sb)->au_si_pid.pid_bitmap[idx];
-	if (bitmap)
-		return test_bit(bit, bitmap);
-	return 0;
+	return !!task_test_aufs(current);
 }
 
 static inline void si_pid_clr(struct super_block *sb)
 {
-	pid_t bit;
-	int idx;
-	unsigned long *bitmap;
-
-	si_pid_idx_bit(&idx, &bit);
-	bitmap = au_sbi(sb)->au_si_pid.pid_bitmap[idx];
-	BUG_ON(!bitmap);
-	AuDebugOn(!test_bit(bit, bitmap));
-	clear_bit(bit, bitmap);
-	/* smp_mb(); */
+	AuDebugOn(!task_test_aufs(current));
+	task_clear_aufs(current);
 }
 
-void si_pid_set(struct super_block *sb);
+static inline void si_pid_set(struct super_block *sb)
+{
+	AuDebugOn(task_test_aufs(current));
+	task_set_aufs(current);
+}
 
 /* ---------------------------------------------------------------------- */
 

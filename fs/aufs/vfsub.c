@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2016 Junjiro R. Okajima
+ * Copyright (C) 2005-2017 Junjiro R. Okajima
  *
  * This program, aufs is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,26 +19,35 @@
  * sub-routines for VFS
  */
 
+#include <linux/mnt_namespace.h>
 #include <linux/namei.h>
 #include <linux/nsproxy.h>
 #include <linux/security.h>
 #include <linux/splice.h>
-#include "../fs/mount.h"
 #include "aufs.h"
 
 #ifdef CONFIG_AUFS_BR_FUSE
 int vfsub_test_mntns(struct vfsmount *mnt, struct super_block *h_sb)
 {
-	struct nsproxy *ns;
-
 	if (!au_test_fuse(h_sb) || !au_userns)
 		return 0;
 
-	ns = current->nsproxy;
-	/* no {get,put}_nsproxy(ns) */
-	return real_mount(mnt)->mnt_ns == ns->mnt_ns ? 0 : -EACCES;
+	return is_current_mnt_ns(mnt) ? 0 : -EACCES;
 }
 #endif
+
+int vfsub_sync_filesystem(struct super_block *h_sb, int wait)
+{
+	int err;
+
+	lockdep_off();
+	down_read(&h_sb->s_umount);
+	err = __sync_filesystem(h_sb, wait);
+	up_read(&h_sb->s_umount);
+	lockdep_on();
+
+	return err;
+}
 
 /* ---------------------------------------------------------------------- */
 
@@ -383,7 +392,7 @@ out:
 
 int vfsub_rename(struct inode *src_dir, struct dentry *src_dentry,
 		 struct inode *dir, struct path *path,
-		 struct inode **delegated_inode)
+		 struct inode **delegated_inode, unsigned int flags)
 {
 	int err;
 	struct path tmp = {
@@ -404,7 +413,7 @@ int vfsub_rename(struct inode *src_dir, struct dentry *src_dentry,
 
 	lockdep_off();
 	err = vfs_rename(src_dir, src_dentry, dir, path->dentry,
-			 delegated_inode, /*flags*/0);
+			 delegated_inode, flags);
 	lockdep_on();
 	if (!err) {
 		int did;
@@ -583,6 +592,7 @@ int vfsub_iterate_dir(struct file *file, struct dir_context *ctx)
 	lockdep_on();
 	if (err >= 0)
 		vfsub_update_h_iattr(&file->f_path, /*did*/NULL); /*ignore*/
+
 	return err;
 }
 

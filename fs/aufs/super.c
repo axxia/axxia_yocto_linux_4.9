@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2016 Junjiro R. Okajima
+ * Copyright (C) 2005-2017 Junjiro R. Okajima
  *
  * This program, aufs is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -46,7 +46,7 @@ static void aufs_destroy_inode_cb(struct rcu_head *head)
 {
 	struct inode *inode = container_of(head, struct inode, i_rcu);
 
-	au_cache_dfree_icntnr(container_of(inode, struct au_icntnr, vfs_inode));
+	au_cache_free_icntnr(container_of(inode, struct au_icntnr, vfs_inode));
 }
 
 static void aufs_destroy_inode(struct inode *inode)
@@ -118,15 +118,31 @@ static int au_show_brs(struct seq_file *seq, struct super_block *sb)
 	return err;
 }
 
+static void au_gen_fmt(char *fmt, int len __maybe_unused, const char *pat,
+		       const char *append)
+{
+	char *p;
+
+	p = fmt;
+	while (*pat != ':')
+		*p++ = *pat++;
+	*p++ = *pat++;
+	strcpy(p, append);
+	AuDebugOn(strlen(fmt) >= len);
+}
+
 static void au_show_wbr_create(struct seq_file *m, int v,
 			       struct au_sbinfo *sbinfo)
 {
 	const char *pat;
+	char fmt[32];
+	struct au_wbr_mfs *mfs;
 
 	AuRwMustAnyLock(&sbinfo->si_rwsem);
 
 	seq_puts(m, ",create=");
 	pat = au_optstr_wbr_create(v);
+	mfs = &sbinfo->si_wbr_mfs;
 	switch (v) {
 	case AuWbrCreate_TDP:
 	case AuWbrCreate_RR:
@@ -134,36 +150,28 @@ static void au_show_wbr_create(struct seq_file *m, int v,
 	case AuWbrCreate_PMFS:
 		seq_puts(m, pat);
 		break;
-	case AuWbrCreate_MFSV:
-		seq_printf(m, /*pat*/"mfs:%lu",
-			   jiffies_to_msecs(sbinfo->si_wbr_mfs.mfs_expire)
-			   / MSEC_PER_SEC);
-		break;
-	case AuWbrCreate_PMFSV:
-		seq_printf(m, /*pat*/"pmfs:%lu",
-			   jiffies_to_msecs(sbinfo->si_wbr_mfs.mfs_expire)
-			   / MSEC_PER_SEC);
-		break;
 	case AuWbrCreate_MFSRR:
-		seq_printf(m, /*pat*/"mfsrr:%llu",
-			   sbinfo->si_wbr_mfs.mfsrr_watermark);
+	case AuWbrCreate_TDMFS:
+	case AuWbrCreate_PMFSRR:
+		au_gen_fmt(fmt, sizeof(fmt), pat, "%llu");
+		seq_printf(m, fmt, mfs->mfsrr_watermark);
+		break;
+	case AuWbrCreate_MFSV:
+	case AuWbrCreate_PMFSV:
+		au_gen_fmt(fmt, sizeof(fmt), pat, "%lu");
+		seq_printf(m, fmt,
+			   jiffies_to_msecs(mfs->mfs_expire)
+			   / MSEC_PER_SEC);
 		break;
 	case AuWbrCreate_MFSRRV:
-		seq_printf(m, /*pat*/"mfsrr:%llu:%lu",
-			   sbinfo->si_wbr_mfs.mfsrr_watermark,
-			   jiffies_to_msecs(sbinfo->si_wbr_mfs.mfs_expire)
-			   / MSEC_PER_SEC);
-		break;
-	case AuWbrCreate_PMFSRR:
-		seq_printf(m, /*pat*/"pmfsrr:%llu",
-			   sbinfo->si_wbr_mfs.mfsrr_watermark);
-		break;
+	case AuWbrCreate_TDMFSV:
 	case AuWbrCreate_PMFSRRV:
-		seq_printf(m, /*pat*/"pmfsrr:%llu:%lu",
-			   sbinfo->si_wbr_mfs.mfsrr_watermark,
-			   jiffies_to_msecs(sbinfo->si_wbr_mfs.mfs_expire)
-			   / MSEC_PER_SEC);
+		au_gen_fmt(fmt, sizeof(fmt), pat, "%llu:%lu");
+		seq_printf(m, fmt, mfs->mfsrr_watermark,
+			   jiffies_to_msecs(mfs->mfs_expire) / MSEC_PER_SEC);
 		break;
+	default:
+		BUG();
 	}
 }
 
@@ -280,6 +288,7 @@ static int aufs_show_options(struct seq_file *m, struct dentry *dentry)
 
 	au_fhsm_show(m, sbinfo);
 
+	AuBool(DIRREN, dirren);
 	AuBool(SUM, sum);
 	/* AuBool(SUM_W, wsum); */
 	AuBool(WARN_PERM, warn_perm);
@@ -439,12 +448,10 @@ static int aufs_sync_fs(struct super_block *sb, int wait)
 			continue;
 
 		h_sb = au_sbr_sb(sb, bindex);
-		if (h_sb->s_op->sync_fs) {
-			e = h_sb->s_op->sync_fs(h_sb, wait);
-			if (unlikely(e && !err))
-				err = e;
-			/* go on even if an error happens */
-		}
+		e = vfsub_sync_filesystem(h_sb, wait);
+		if (unlikely(e && !err))
+			err = e;
+		/* go on even if an error happens */
 	}
 	si_read_unlock(sb);
 
@@ -828,7 +835,7 @@ static int aufs_remount_fs(struct super_block *sb, int *flags, char *data)
 out_mtx:
 	inode_unlock(inode);
 out_opts:
-	au_delayed_free_page((unsigned long)opts.opt);
+	free_page((unsigned long)opts.opt);
 out:
 	err = cvt_err(err);
 	AuTraceErr(err);
@@ -923,7 +930,7 @@ static int aufs_fill_super(struct super_block *sb, void *raw_data,
 	sb->s_maxbytes = 0;
 	sb->s_stack_depth = 1;
 	au_export_init(sb);
-	/* au_xattr_init(sb); */
+	au_xattr_init(sb);
 
 	err = alloc_root(sb);
 	if (unlikely(err)) {
@@ -969,7 +976,7 @@ out_info:
 	kobject_put(&sbinfo->si_kobj);
 	sb->s_fs_info = NULL;
 out_opts:
-	au_delayed_free_page((unsigned long)opts.opt);
+	free_page((unsigned long)opts.opt);
 out:
 	AuTraceErr(err);
 	err = cvt_err(err);
@@ -1020,6 +1027,7 @@ static void aufs_kill_sb(struct super_block *sb)
 		if (au_opt_test(sbinfo->si_mntflags, PLINK))
 			au_plink_put(sb, /*verbose*/1);
 		au_xino_clr(sb);
+		au_dr_opt_flush(sb);
 		sbinfo->si_sb = NULL;
 		aufs_write_unlock(sb->s_root);
 		au_nwt_flush(&sbinfo->si_nowait);

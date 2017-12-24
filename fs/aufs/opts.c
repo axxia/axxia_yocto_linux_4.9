@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2016 Junjiro R. Okajima
+ * Copyright (C) 2005-2017 Junjiro R. Okajima
  *
  * This program, aufs is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -47,6 +47,7 @@ enum {
 	Opt_verbose, Opt_noverbose,
 	Opt_sum, Opt_nosum, Opt_wsum,
 	Opt_dirperm1, Opt_nodirperm1,
+	Opt_dirren, Opt_nodirren,
 	Opt_acl, Opt_noacl,
 	Opt_tail, Opt_ignore, Opt_ignore_silent, Opt_err
 };
@@ -101,10 +102,18 @@ static match_table_t options = {
 	{Opt_dio, "dio"},
 	{Opt_nodio, "nodio"},
 
+#ifdef CONFIG_AUFS_DIRREN
+	{Opt_dirren, "dirren"},
+	{Opt_nodirren, "nodirren"},
+#else
+	{Opt_ignore, "dirren"},
+	{Opt_ignore_silent, "nodirren"},
+#endif
+
 #ifdef CONFIG_AUFS_FHSM
 	{Opt_fhsm_sec, "fhsm_sec=%d"},
 #else
-	{Opt_ignore_silent, "fhsm_sec=%d"},
+	{Opt_ignore, "fhsm_sec=%d"},
 #endif
 
 	{Opt_diropq_a, "diropq=always"},
@@ -117,7 +126,7 @@ static match_table_t options = {
 
 	/* keep them temporary */
 	{Opt_ignore_silent, "nodlgt"},
-	{Opt_ignore_silent, "clean_plink"},
+	{Opt_ignore, "clean_plink"},
 
 #ifdef CONFIG_AUFS_SHWH
 	{Opt_shwh, "shwh"},
@@ -155,7 +164,7 @@ static match_table_t options = {
 	{Opt_acl, "acl"},
 	{Opt_noacl, "noacl"},
 #else
-	{Opt_ignore_silent, "acl"},
+	{Opt_ignore, "acl"},
 	{Opt_ignore_silent, "noacl"},
 #endif
 
@@ -424,6 +433,10 @@ static match_table_t au_wbr_create_policy = {
 	{AuWbrCreate_MFSV, "mfs:%d"},
 	{AuWbrCreate_MFSV, "most-free-space:%d"},
 
+	/* top-down regardless the parent, and then mfs */
+	{AuWbrCreate_TDMFS, "tdmfs:%d"},
+	{AuWbrCreate_TDMFSV, "tdmfs:%d:%d"},
+
 	{AuWbrCreate_MFSRR, "mfsrr:%d"},
 	{AuWbrCreate_MFSRRV, "mfsrr:%d:%d"},
 	{AuWbrCreate_PMFS, "pmfs"},
@@ -499,6 +512,7 @@ au_wbr_create_val(char *str, struct au_opt_wbr_create *create)
 	create->wbr_create = err;
 	switch (err) {
 	case AuWbrCreate_MFSRRV:
+	case AuWbrCreate_TDMFSV:
 	case AuWbrCreate_PMFSRRV:
 		e = au_wbr_mfs_wmark(&args[0], str, create);
 		if (!e)
@@ -507,6 +521,7 @@ au_wbr_create_val(char *str, struct au_opt_wbr_create *create)
 			err = e;
 		break;
 	case AuWbrCreate_MFSRR:
+	case AuWbrCreate_TDMFS:
 	case AuWbrCreate_PMFSRR:
 		e = au_wbr_mfs_wmark(&args[0], str, create);
 		if (unlikely(e)) {
@@ -717,10 +732,12 @@ static void dump_opts(struct au_opts *opts)
 				AuDbg("%d sec\n", u.create->mfs_second);
 				break;
 			case AuWbrCreate_MFSRR:
+			case AuWbrCreate_TDMFS:
 				AuDbg("%llu watermark\n",
 					  u.create->mfsrr_watermark);
 				break;
 			case AuWbrCreate_MFSRRV:
+			case AuWbrCreate_TDMFSV:
 			case AuWbrCreate_PMFSRRV:
 				AuDbg("%llu watermark, %d sec\n",
 					  u.create->mfsrr_watermark,
@@ -734,6 +751,12 @@ static void dump_opts(struct au_opts *opts)
 			break;
 		case Opt_fhsm_sec:
 			AuDbg("fhsm_sec %u\n", opt->fhsm_second);
+			break;
+		case Opt_dirren:
+			AuLabel(dirren);
+			break;
+		case Opt_nodirren:
+			AuLabel(nodirren);
 			break;
 		case Opt_acl:
 			AuLabel(acl);
@@ -1185,6 +1208,8 @@ int au_opts_parse(struct super_block *sb, char *str, struct au_opts *opts)
 		case Opt_wsum:
 		case Opt_rdblk_def:
 		case Opt_rdhash_def:
+		case Opt_dirren:
+		case Opt_nodirren:
 		case Opt_acl:
 		case Opt_noacl:
 			err = 0;
@@ -1256,7 +1281,7 @@ int au_opts_parse(struct super_block *sb, char *str, struct au_opts *opts)
 		}
 	}
 
-	au_delayed_kfree(a);
+	kfree(a);
 	dump_opts(opts);
 	if (unlikely(err))
 		au_opts_free(opts);
@@ -1286,6 +1311,8 @@ static int au_opt_wbr_create(struct super_block *sb,
 	switch (create->wbr_create) {
 	case AuWbrCreate_MFSRRV:
 	case AuWbrCreate_MFSRR:
+	case AuWbrCreate_TDMFS:
+	case AuWbrCreate_TDMFSV:
 	case AuWbrCreate_PMFSRR:
 	case AuWbrCreate_PMFSRRV:
 		sbinfo->si_wbr_mfs.mfsrr_watermark = create->mfsrr_watermark;
@@ -1449,6 +1476,28 @@ static int au_opt_simple(struct super_block *sb, struct au_opt *opt,
 		au_fclr_opts(opts->flags, TRUNC_XIB);
 		break;
 
+	case Opt_dirren:
+		err = 1;
+		if (!au_opt_test(sbinfo->si_mntflags, DIRREN)) {
+			err = au_dr_opt_set(sb);
+			if (!err)
+				err = 1;
+		}
+		if (err == 1)
+			au_opt_set(sbinfo->si_mntflags, DIRREN);
+		break;
+	case Opt_nodirren:
+		err = 1;
+		if (au_opt_test(sbinfo->si_mntflags, DIRREN)) {
+			err = au_dr_opt_clr(sb, au_ftest_opts(opts->flags,
+							      DR_FLUSHED));
+			if (!err)
+				err = 1;
+		}
+		if (err == 1)
+			au_opt_clr(sbinfo->si_mntflags, DIRREN);
+		break;
+
 	case Opt_acl:
 		sb->s_flags |= MS_POSIXACL;
 		break;
@@ -1517,7 +1566,6 @@ static int au_opt_br(struct super_block *sb, struct au_opt *opt,
 		}
 		break;
 	}
-
 	return err;
 }
 
@@ -1678,8 +1726,7 @@ int au_opts_verify(struct super_block *sb, unsigned long sb_flags,
 		au_hn_inode_unlock(hdir);
 
 		if (!err && do_free) {
-			if (wbr)
-				au_delayed_kfree(wbr);
+			kfree(wbr);
 			br->br_wbr = NULL;
 		}
 	}
@@ -1808,7 +1855,11 @@ int au_opts_remount(struct super_block *sb, struct au_opts *opts)
 
 	SiMustWriteLock(sb);
 
-	err = 0;
+	err = au_dr_opt_flush(sb);
+	if (unlikely(err))
+		goto out;
+	au_fset_opts(opts->flags, DR_FLUSHED);
+
 	dir = d_inode(sb->s_root);
 	sbinfo = au_sbi(sb);
 	opt_xino = NULL;
@@ -1849,6 +1900,8 @@ int au_opts_remount(struct super_block *sb, struct au_opts *opts)
 		au_fset_opts(opts->flags, REFRESH);
 
 	AuDbg("status 0x%x\n", opts->flags);
+
+out:
 	return err;
 }
 
