@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2016 Junjiro R. Okajima
+ * Copyright (C) 2005-2017 Junjiro R. Okajima
  *
  * This program, aufs is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -357,9 +357,9 @@ int au_copy_file(struct file *dst, struct file *src, loff_t len)
 	dst->f_pos = 0;
 	err = au_do_copy_file(dst, src, len, buf, blksize);
 	if (do_kfree)
-		au_delayed_kfree(buf);
+		kfree(buf);
 	else
-		au_delayed_free_page((unsigned long)buf);
+		free_page((unsigned long)buf);
 
 out:
 	return err;
@@ -393,7 +393,8 @@ static int au_cp_regular(struct au_cp_generic *cpg)
 			.label = &&out_src
 		}
 	};
-	struct super_block *sb;
+	struct super_block *sb, *h_src_sb;
+	struct inode *h_src_inode;
 	struct task_struct *tsk = current;
 
 	/* bsrc branch can be ro/rw. */
@@ -409,8 +410,30 @@ static int au_cp_regular(struct au_cp_generic *cpg)
 	}
 
 	/* try stopping to update while we copyup */
-	IMustLock(d_inode(file[SRC].dentry));
-	err = au_copy_file(file[DST].file, file[SRC].file, cpg->len);
+	h_src_inode = d_inode(file[SRC].dentry);
+	h_src_sb = h_src_inode->i_sb;
+	if (!au_test_nfs(h_src_sb))
+		IMustLock(h_src_inode);
+
+	if (h_src_sb != file_inode(file[DST].file)->i_sb
+	    || !file[DST].file->f_op->clone_file_range)
+		err = au_copy_file(file[DST].file, file[SRC].file, cpg->len);
+	else {
+		if (!au_test_nfs(h_src_sb)) {
+			inode_unlock_shared(h_src_inode);
+			err = vfsub_clone_file_range(file[SRC].file,
+						     file[DST].file, cpg->len);
+			vfsub_inode_lock_shared_nested(h_src_inode,
+						       AuLsc_I_CHILD);
+		} else
+			err = vfsub_clone_file_range(file[SRC].file,
+						     file[DST].file, cpg->len);
+		if (unlikely(err == -EOPNOTSUPP && au_test_nfs(h_src_sb)))
+			/* the backend fs on NFS may not support cloning */
+			err = au_copy_file(file[DST].file, file[SRC].file,
+					   cpg->len);
+		AuTraceErr(err);
+	}
 
 	/* i wonder if we had O_NO_DELAY_FPUT flag */
 	if (tsk->flags & PF_KTHREAD)
@@ -451,7 +474,7 @@ static int au_do_cpup_regular(struct au_cp_generic *cpg,
 		cpg->len = l;
 	if (cpg->len) {
 		/* try stopping to update while we are referencing */
-		inode_lock_nested(h_src_inode, AuLsc_I_CHILD);
+		vfsub_inode_lock_shared_nested(h_src_inode, AuLsc_I_CHILD);
 		au_pin_hdir_unlock(cpg->pin);
 
 		h_path.dentry = au_h_dptr(cpg->dentry, cpg->bsrc);
@@ -460,17 +483,23 @@ static int au_do_cpup_regular(struct au_cp_generic *cpg,
 		if (!au_test_nfs(h_src_inode->i_sb))
 			err = vfs_getattr(&h_path, &h_src_attr->st);
 		else {
-			inode_unlock(h_src_inode);
+			inode_unlock_shared(h_src_inode);
 			err = vfs_getattr(&h_path, &h_src_attr->st);
-			inode_lock_nested(h_src_inode, AuLsc_I_CHILD);
+			vfsub_inode_lock_shared_nested(h_src_inode,
+						       AuLsc_I_CHILD);
 		}
 		if (unlikely(err)) {
-			inode_unlock(h_src_inode);
+			inode_unlock_shared(h_src_inode);
 			goto out;
 		}
 		h_src_attr->valid = 1;
-		err = au_cp_regular(cpg);
-		inode_unlock(h_src_inode);
+		if (!au_test_nfs(h_src_inode->i_sb)) {
+			err = au_cp_regular(cpg);
+			inode_unlock_shared(h_src_inode);
+		} else {
+			inode_unlock_shared(h_src_inode);
+			err = au_cp_regular(cpg);
+		}
 		rerr = au_pin_hdir_relock(cpg->pin);
 		if (!err && rerr)
 			err = rerr;
@@ -519,7 +548,7 @@ static int au_do_cpup_symlink(struct path *h_path, struct dentry *h_src,
 		sym.k[symlen] = 0;
 		err = vfsub_symlink(h_dir, h_path, sym.k);
 	}
-	au_delayed_free_page((unsigned long)sym.k);
+	free_page((unsigned long)sym.k);
 
 out:
 	return err;
@@ -711,7 +740,8 @@ static int au_do_ren_after_cpup(struct au_cp_generic *cpg, struct path *h_path)
 	IMustLock(h_dir);
 	AuDbg("%pd %pd\n", h_dentry, h_path->dentry);
 	/* no delegation since it is just created */
-	err = vfsub_rename(h_dir, h_dentry, h_dir, h_path, /*delegated*/NULL);
+	err = vfsub_rename(h_dir, h_dentry, h_dir, h_path, /*delegated*/NULL,
+			   /*flags*/0);
 	dput(h_path->dentry);
 
 out:
@@ -724,6 +754,8 @@ out:
  * @len is for truncating when it is -1 copyup the entire file.
  * in link/rename cases, @dst_parent may be different from the real one.
  * basic->bsrc can be larger than basic->bdst.
+ * aufs doesn't touch the credential so
+ * security_inode_copy_up{,_xattr}() are unnecrssary.
  */
 static int au_cpup_single(struct au_cp_generic *cpg, struct dentry *dst_parent)
 {
@@ -890,7 +922,7 @@ out_rev:
 	}
 out_parent:
 	dput(dst_parent);
-	au_delayed_kfree(a);
+	kfree(a);
 out:
 	return err;
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2014-2016 Junjiro R. Okajima
+ * Copyright (C) 2014-2017 Junjiro R. Okajima
  *
  * This program, aufs is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,6 +19,8 @@
  * handling xattr functions
  */
 
+#include <linux/fs.h>
+#include <linux/posix_acl_xattr.h>
 #include <linux/xattr.h>
 #include "aufs.h"
 
@@ -114,7 +116,7 @@ int au_cpup_xattr(struct dentry *h_dst, struct dentry *h_src, int ignore_flags,
 	h_isrc = d_inode(h_src);
 	h_idst = d_inode(h_dst);
 	inode_unlock(h_idst);
-	inode_lock_nested(h_isrc, AuLsc_I_CHILD);
+	vfsub_inode_lock_shared_nested(h_isrc, AuLsc_I_CHILD);
 	inode_lock_nested(h_idst, AuLsc_I_CHILD2);
 	unlocked = 0;
 
@@ -140,7 +142,7 @@ int au_cpup_xattr(struct dentry *h_dst, struct dentry *h_src, int ignore_flags,
 			goto out;
 		err = vfs_listxattr(h_src, p, ssz);
 	}
-	inode_unlock(h_isrc);
+	inode_unlock_shared(h_isrc);
 	unlocked = 1;
 	AuDbg("err %d, ssz %zd\n", err, ssz);
 	if (unlikely(err < 0))
@@ -176,20 +178,31 @@ int au_cpup_xattr(struct dentry *h_dst, struct dentry *h_src, int ignore_flags,
 		AuTraceErr(err);
 	}
 
-	if (value)
-		au_delayed_kfree(value);
+	kfree(value);
 
 out_free:
-	if (o)
-		au_delayed_kfree(o);
+	kfree(o);
 out:
 	if (!unlocked)
-		inode_unlock(h_isrc);
+		inode_unlock_shared(h_isrc);
 	AuTraceErr(err);
 	return err;
 }
 
 /* ---------------------------------------------------------------------- */
+
+static int au_smack_reentering(struct super_block *sb)
+{
+#if IS_ENABLED(CONFIG_SECURITY_SMACK)
+	/*
+	 * as a part of lookup, smack_d_instantiate() is called, and it calls
+	 * i_op->getxattr(). ouch.
+	 */
+	return si_pid_test(sb);
+#else
+	return 0;
+#endif
+}
 
 enum {
 	AU_XATTR_LIST,
@@ -214,14 +227,18 @@ struct au_lgxattr {
 static ssize_t au_lgxattr(struct dentry *dentry, struct au_lgxattr *arg)
 {
 	ssize_t err;
+	int reenter;
 	struct path h_path;
 	struct super_block *sb;
 
 	sb = dentry->d_sb;
-	err = si_read_lock(sb, AuLock_FLUSH | AuLock_NOPLM);
-	if (unlikely(err))
-		goto out;
-	err = au_h_path_getattr(dentry, /*force*/1, &h_path);
+	reenter = au_smack_reentering(sb);
+	if (!reenter) {
+		err = si_read_lock(sb, AuLock_FLUSH | AuLock_NOPLM);
+		if (unlikely(err))
+			goto out;
+	}
+	err = au_h_path_getattr(dentry, /*force*/1, &h_path, reenter);
 	if (unlikely(err))
 		goto out_si;
 	if (unlikely(!h_path.dentry))
@@ -243,9 +260,11 @@ static ssize_t au_lgxattr(struct dentry *dentry, struct au_lgxattr *arg)
 	}
 
 out_di:
-	di_read_unlock(dentry, AuLock_IR);
+	if (!reenter)
+		di_read_unlock(dentry, AuLock_IR);
 out_si:
-	si_read_unlock(sb);
+	if (!reenter)
+		si_read_unlock(sb);
 out:
 	AuTraceErr(err);
 	return err;
@@ -264,8 +283,9 @@ ssize_t aufs_listxattr(struct dentry *dentry, char *list, size_t size)
 	return au_lgxattr(dentry, &arg);
 }
 
-ssize_t aufs_getxattr(struct dentry *dentry, struct inode *inode __maybe_unused,
-		      const char *name, void *value, size_t size)
+static ssize_t au_getxattr(struct dentry *dentry,
+			   struct inode *inode __maybe_unused,
+			   const char *name, void *value, size_t size)
 {
 	struct au_lgxattr arg = {
 		.type = AU_XATTR_GET,
@@ -279,10 +299,11 @@ ssize_t aufs_getxattr(struct dentry *dentry, struct inode *inode __maybe_unused,
 	return au_lgxattr(dentry, &arg);
 }
 
-int aufs_setxattr(struct dentry *dentry, struct inode *inode, const char *name,
-		  const void *value, size_t size, int flags)
+static int au_setxattr(struct dentry *dentry, struct inode *inode,
+		       const char *name, const void *value, size_t size,
+		       int flags)
 {
-	struct au_srxattr arg = {
+	struct au_sxattr arg = {
 		.type = AU_XATTR_SET,
 		.u.set = {
 			.name	= name,
@@ -292,56 +313,43 @@ int aufs_setxattr(struct dentry *dentry, struct inode *inode, const char *name,
 		},
 	};
 
-	return au_srxattr(dentry, inode, &arg);
-}
-
-int aufs_removexattr(struct dentry *dentry, const char *name)
-{
-	struct au_srxattr arg = {
-		.type = AU_XATTR_REMOVE,
-		.u.remove = {
-			.name	= name
-		},
-	};
-
-	return au_srxattr(dentry, d_inode(dentry), &arg);
+	return au_sxattr(dentry, inode, &arg);
 }
 
 /* ---------------------------------------------------------------------- */
 
-#if 0
-static size_t au_xattr_list(struct dentry *dentry, char *list, size_t list_size,
-			    const char *name, size_t name_len, int type)
+static int au_xattr_get(const struct xattr_handler *handler,
+			struct dentry *dentry, struct inode *inode,
+			const char *name, void *buffer, size_t size)
 {
-	return aufs_listxattr(dentry, list, list_size);
+	return au_getxattr(dentry, inode, name, buffer, size);
 }
 
-static int au_xattr_get(struct dentry *dentry, const char *name, void *buffer,
-			size_t size, int type)
+static int au_xattr_set(const struct xattr_handler *handler,
+			struct dentry *dentry, struct inode *inode,
+			const char *name, const void *value, size_t size,
+			int flags)
 {
-	return aufs_getxattr(dentry, name, buffer, size);
-}
-
-static int au_xattr_set(struct dentry *dentry, const char *name,
-			const void *value, size_t size, int flags, int type)
-{
-	return aufs_setxattr(dentry, name, value, size, flags);
+	return au_setxattr(dentry, inode, name, value, size, flags);
 }
 
 static const struct xattr_handler au_xattr_handler = {
-	/* no prefix, no flags */
-	.list	= au_xattr_list,
+	.name	= "",
+	.prefix	= "",
 	.get	= au_xattr_get,
 	.set	= au_xattr_set
-	/* why no remove? */
 };
 
 static const struct xattr_handler *au_xattr_handlers[] = {
-	&au_xattr_handler
+#ifdef CONFIG_FS_POSIX_ACL
+	&posix_acl_access_xattr_handler,
+	&posix_acl_default_xattr_handler,
+#endif
+	&au_xattr_handler, /* must be last */
+	NULL
 };
 
 void au_xattr_init(struct super_block *sb)
 {
-	/* sb->s_xattr = au_xattr_handlers; */
+	sb->s_xattr = au_xattr_handlers;
 }
-#endif

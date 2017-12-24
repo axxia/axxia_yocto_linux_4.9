@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2016 Junjiro R. Okajima
+ * Copyright (C) 2005-2017 Junjiro R. Okajima
  *
  * This program, aufs is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -35,7 +35,7 @@ int au_hn_alloc(struct au_hinode *hinode, struct inode *inode)
 		AuTraceErr(err);
 		if (unlikely(err)) {
 			hinode->hi_notify = NULL;
-			au_cache_dfree_hnotify(hn);
+			au_cache_free_hnotify(hn);
 			/*
 			 * The upper dir was removed by udba, but the same named
 			 * dir left. In this case, aufs assignes a new inode
@@ -59,7 +59,7 @@ void au_hn_free(struct au_hinode *hinode)
 	if (hn) {
 		hinode->hi_notify = NULL;
 		if (au_hnotify_op.free(hinode, hn))
-			au_cache_dfree_hnotify(hn);
+			au_cache_free_hnotify(hn);
 	}
 }
 
@@ -322,11 +322,11 @@ static int hn_job(struct hn_job_args *a)
 	if (au_ftest_hnjob(a->flags, TRYXINO0)
 	    && a->inode
 	    && a->h_inode) {
-		inode_lock_nested(a->h_inode, AuLsc_I_CHILD);
+		vfsub_inode_lock_shared_nested(a->h_inode, AuLsc_I_CHILD);
 		if (!a->h_inode->i_nlink
 		    && !(a->h_inode->i_state & I_LINKABLE))
 			hn_xino(a->inode, a->h_inode); /* ignore this error */
-		inode_unlock(a->h_inode);
+		inode_unlock_shared(a->h_inode);
 	}
 
 	/* make the generation obsolete */
@@ -462,6 +462,14 @@ static void au_hn_bh(void *_args)
 	AuDebugOn(!sbinfo);
 	si_write_lock(sb, AuLock_NOPLMW);
 
+	if (au_opt_test(sbinfo->si_mntflags, DIRREN))
+		switch (a->mask & FS_EVENTS_POSS_ON_CHILD) {
+		case FS_MOVED_FROM:
+		case FS_MOVED_TO:
+			AuWarn1("DIRREN with UDBA may not work correctly "
+				"for the direct rename(2)\n");
+		}
+
 	ii_read_lock_parent(a->dir);
 	bfound = -1;
 	bbot = au_ibbot(a->dir);
@@ -532,7 +540,7 @@ out:
 	iput(a->dir);
 	si_write_unlock(sb);
 	au_nwt_done(&sbinfo->si_nowait);
-	au_delayed_kfree(a);
+	kfree(a);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -638,7 +646,7 @@ int au_hnotify(struct inode *h_dir, struct au_hnotify *hnotify, u32 mask,
 		iput(args->h_child_inode);
 		iput(args->h_dir);
 		iput(args->dir);
-		au_delayed_kfree(args);
+		kfree(args);
 	}
 
 out:
@@ -679,26 +687,17 @@ void au_hnotify_fin_br(struct au_branch *br)
 
 static void au_hn_destroy_cache(void)
 {
-	struct au_cache *cp;
-
-	flush_delayed_work(&au_dfree.dwork);
-	cp = au_dfree.cache + AuCache_HNOTIFY;
-	AuDebugOn(!llist_empty(&cp->llist));
-	kmem_cache_destroy(cp->cache);
-	cp->cache = NULL;
+	kmem_cache_destroy(au_cache[AuCache_HNOTIFY]);
+	au_cache[AuCache_HNOTIFY] = NULL;
 }
-
-AU_CACHE_DFREE_FUNC(hnotify, HNOTIFY, hn_lnode);
 
 int __init au_hnotify_init(void)
 {
 	int err;
-	struct au_cache *cp;
 
 	err = -ENOMEM;
-	cp = au_dfree.cache + AuCache_HNOTIFY;
-	cp->cache = AuCache(au_hnotify);
-	if (cp->cache) {
+	au_cache[AuCache_HNOTIFY] = AuCache(au_hnotify);
+	if (au_cache[AuCache_HNOTIFY]) {
 		err = 0;
 		if (au_hnotify_op.init)
 			err = au_hnotify_op.init();
@@ -711,13 +710,10 @@ int __init au_hnotify_init(void)
 
 void au_hnotify_fin(void)
 {
-	struct au_cache *cp;
-
 	if (au_hnotify_op.fin)
 		au_hnotify_op.fin();
 
 	/* cf. au_cache_fin() */
-	cp = au_dfree.cache + AuCache_HNOTIFY;
-	if (cp->cache)
+	if (au_cache[AuCache_HNOTIFY])
 		au_hn_destroy_cache();
 }
