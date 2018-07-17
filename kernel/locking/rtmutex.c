@@ -986,14 +986,57 @@ static inline void rt_spin_lock_fastlock(struct rt_mutex *lock,
 {
 	might_sleep_no_state_check();
 
+<<<<<<< HEAD
 	if (do_mig_dis)
 		migrate_disable();
+||||||| merged common ancestors
+	/*
+	 * Early deadlock detection. We really don't want the task to
+	 * enqueue on itself just to untangle the mess later. It's not
+	 * only an optimization. We drop the locks, so another waiter
+	 * can come in before the chain walk detects the deadlock. So
+	 * the other will detect the deadlock and return -EDEADLOCK,
+	 * which is wrong, as the other waiter is not in a deadlock
+	 * situation.
+	 */
+	if (owner == task)
+		return -EDEADLK;
+=======
+	lockdep_assert_held(&lock->wait_lock);
 
+	/*
+	 * Early deadlock detection. We really don't want the task to
+	 * enqueue on itself just to untangle the mess later. It's not
+	 * only an optimization. We drop the locks, so another waiter
+	 * can come in before the chain walk detects the deadlock. So
+	 * the other will detect the deadlock and return -EDEADLOCK,
+	 * which is wrong, as the other waiter is not in a deadlock
+	 * situation.
+	 */
+	if (owner == task)
+		return -EDEADLK;
+>>>>>>> standard/base
+
+<<<<<<< HEAD
 	if (likely(rt_mutex_cmpxchg_acquire(lock, NULL, current)))
 		return;
 	else
 		slowfn(lock, do_mig_dis);
 }
+||||||| merged common ancestors
+	raw_spin_lock(&task->pi_lock);
+	__rt_mutex_adjust_prio(task);
+	waiter->task = task;
+	waiter->lock = lock;
+	waiter->prio = task->prio;
+=======
+	raw_spin_lock(&task->pi_lock);
+	__rt_mutex_adjust_prio(task);
+	waiter->task = task;
+	waiter->lock = lock;
+	waiter->prio = task->prio;
+	waiter->deadline = task->dl.deadline;
+>>>>>>> standard/base
 
 static inline void rt_spin_lock_fastunlock(struct rt_mutex *lock,
 					   void  (*slowfn)(struct rt_mutex *lock))
@@ -1149,9 +1192,23 @@ static void  noinline __sched rt_spin_lock_slowunlock(struct rt_mutex *lock)
 	WAKE_Q(wake_sleeper_q);
 	bool postunlock;
 
+<<<<<<< HEAD
 	raw_spin_lock_irqsave(&lock->wait_lock, flags);
 	postunlock = __rt_mutex_unlock_common(lock, &wake_q, &wake_sleeper_q);
 	raw_spin_unlock_irqrestore(&lock->wait_lock, flags);
+||||||| merged common ancestors
+	raw_spin_lock(&current->pi_lock);
+	rt_mutex_dequeue(lock, waiter);
+	current->pi_blocked_on = NULL;
+	raw_spin_unlock(&current->pi_lock);
+=======
+	lockdep_assert_held(&lock->wait_lock);
+
+	raw_spin_lock(&current->pi_lock);
+	rt_mutex_dequeue(lock, waiter);
+	current->pi_blocked_on = NULL;
+	raw_spin_unlock(&current->pi_lock);
+>>>>>>> standard/base
 
 	if (postunlock)
 		rt_mutex_postunlock(&wake_q, &wake_sleeper_q);
