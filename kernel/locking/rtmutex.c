@@ -1149,23 +1149,9 @@ static void  noinline __sched rt_spin_lock_slowunlock(struct rt_mutex *lock)
 	WAKE_Q(wake_sleeper_q);
 	bool postunlock;
 
-<<<<<<< HEAD
 	raw_spin_lock_irqsave(&lock->wait_lock, flags);
 	postunlock = __rt_mutex_unlock_common(lock, &wake_q, &wake_sleeper_q);
 	raw_spin_unlock_irqrestore(&lock->wait_lock, flags);
-||||||| merged common ancestors
-	raw_spin_lock(&current->pi_lock);
-	rt_mutex_dequeue(lock, waiter);
-	current->pi_blocked_on = NULL;
-	raw_spin_unlock(&current->pi_lock);
-=======
-	lockdep_assert_held(&lock->wait_lock);
-
-	raw_spin_lock(&current->pi_lock);
-	rt_mutex_dequeue(lock, waiter);
-	current->pi_blocked_on = NULL;
-	raw_spin_unlock(&current->pi_lock);
->>>>>>> standard/base
 
 	if (postunlock)
 		rt_mutex_postunlock(&wake_q, &wake_sleeper_q);
