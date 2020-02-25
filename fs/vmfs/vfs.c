@@ -91,6 +91,9 @@ VFS *vfsop_new(MessageBox *mb)
 {
 	VFS *vfs = (VFS *) kmalloc(sizeof(struct VFS), GFP_KERNEL);
 
+	if (!vfs)
+		return NULL;
+
 	/* vfs should check that MB is actually a VFS mb */
 
 	vfsop_init(vfs, mb);

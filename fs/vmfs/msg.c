@@ -63,7 +63,8 @@ MessageComposer *msgc_new(void *data, uint32_t len)
 	    (MessageComposer *) kmalloc(sizeof(struct MessageComposer),
 					GFP_KERNEL);
 
-	msgc_init(mc, data, len);
+	if (mc)
+		msgc_init(mc, data, len);
 
 	return mc;
 }
@@ -187,7 +188,8 @@ MessageDecomposer *msgd_new(const void *data, uint32_t len)
 	    (MessageDecomposer *) kmalloc(sizeof(struct MessageDecomposer),
 					  GFP_KERNEL);
 
-	msgd_init(md, data, len);
+	if (md)
+		msgd_init(md, data, len);
 
 	return md;
 }

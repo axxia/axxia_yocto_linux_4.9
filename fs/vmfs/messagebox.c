@@ -106,10 +106,16 @@ MessageBox *mb_new(phys_addr_t dev_base, uint32_t dev_irq)
 
 	mb = (MessageBox *) kmalloc(sizeof(MessageBox), GFP_KERNEL);
 
+	if (!mb) {
+		DEBUG1("kmalloc() failed\n");
+		return NULL;
+	}
+
 	/* Map the messagebox registers and buffer int VM */
 
 	if (!request_mem_region(dev_base, MBOX_DEVICE_SIZE, "messagebox")) {
 		DEBUG1("i/o space at 0x%llx already in use\n", dev_base);
+		kfree(mb);
 		return NULL;
 	}
 
