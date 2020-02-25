@@ -3180,6 +3180,7 @@ _mtc_axi_dev_write(struct file *filp,
 	memset(mtc_buf, 0, len);
 	if (copy_from_user((void *)mtc_buf, (void *)data, len)) {
 		pr_debug("MTC Error write\n");
+		kfree(mtc_buf);
 		return -EFAULT;
 	}
 
@@ -3343,6 +3344,12 @@ mtc_dev_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			pr_debug("MTC Error ioctl\n");
 			return -EFAULT;
 		}
+
+		if ((addr / 4) >= sizeof(struct mtc_regs)) {
+			pr_debug("Requested Index Out of Range\n");
+			return -EFAULT;
+		}
+
 		tmp2 = *((u32 *) dev->regs + addr / 4);
 
 		if (copy_to_user((void *)arg, &tmp2, sizeof(unsigned int)))
