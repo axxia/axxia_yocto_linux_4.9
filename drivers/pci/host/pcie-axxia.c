@@ -686,8 +686,12 @@ static void axxia_pcie_irq_domain_free(struct irq_domain *domain,
 				  unsigned int virq, unsigned int nr_irqs)
 {
 	struct pcie_port *pp = domain->host_data;
-	struct irq_data *data = irq_domain_get_irq_data(domain, virq);
+	struct irq_data *data;
 	int i;
+
+	data = irq_domain_get_irq_data(domain, virq);
+	if (!data)
+		return;
 
 	mutex_lock(&pp->bitmap_lock);
 	bitmap_clear(pp->bitmap, data->hwirq, nr_irqs);
@@ -817,7 +821,7 @@ int axxia_dw_pcie_handle_msix_irq(struct pcie_port *pp, int offset)
 {
 	unsigned long val;
 	int i, pos, irq;
-	int ret;
+	int ret = 0;
 
 	i = offset;
 	axxia_axi_gpreg_readl(pp,
@@ -1749,6 +1753,9 @@ static int axxia_pcie_probe(struct platform_device *pdev)
 	pp->dev = &pdev->dev;
 
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "dbi");
+
+	if (!res)
+		return -ENOMEM;
 
 	if (0xa002000000 == res->start) {
 		pp->pei_nr = 0;
