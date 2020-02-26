@@ -225,7 +225,7 @@ static void init_descriptor(struct gpdma_desc *desc,
 static phys_addr_t desc_to_paddr(const struct gpdma_channel *dmac,
 				 const struct gpdma_desc *desc)
 {
-	phys_addr_t paddr = virt_to_phys(&desc->hw);
+	phys_addr_t paddr = virt_to_phys((void *)&desc->hw);
 
 	WARN_ON(paddr & 0xf);
 	if (dmac->engine->chip->flags & LSIDMA_NEXT_FULL)
@@ -548,6 +548,9 @@ gpdma_prep_sg(struct dma_chan *chan,
 		}
 	}
 
+	if (prev == NULL)
+		return NULL;
+
 	/* Interrupt on last descriptor in chain */
 	prev->hw.ch_config |= cpu_to_le32(DMA_CONFIG_END);
 
@@ -771,7 +774,7 @@ static int gpdma_of_probe(struct platform_device *op)
 		}
 	}
 
-	/* General registers at device specific offset */
+	/* General registes at device specific offset */
 	engine->gbase = engine->iobase + engine->chip->genregs_offset;
 
 	rc = alloc_desc_table(engine);
