@@ -186,7 +186,7 @@ axxia_timer_clocksource_init(void __iomem *base, const char *name)
 	long rate;
 
 	rate = axxia_timer_get_clock_rate(name);
-	if (WARN_ON(rate < 0))
+	if (WARN_ON(rate <= 0))
 		return;
 
 	/* Setup timer 0 as free-running clocksource */
@@ -211,7 +211,7 @@ axxia_timer_clockevents_init(void __iomem *base,
 	long               rate;
 
 	rate = axxia_timer_get_clock_rate(name);
-	if (WARN_ON(rate < 0))
+	if (WARN_ON(rate <= 0))
 		return;
 
 	evt = kzalloc(sizeof(*evt), GFP_KERNEL);
