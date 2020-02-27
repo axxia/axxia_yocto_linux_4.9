@@ -10,7 +10,8 @@
  *   the GNU General Public License for more details.
  *
  *   You should have received a copy of the GNU General Public License
- *   along with this program.
+ *   along with this program;  if not, write to the Free Software
+ *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 #include <linux/init.h>
@@ -485,7 +486,7 @@ read_buff:
 			 * core for processing
 			 */
 			rio_inb_pwrite_handler(priv->mport,
-					 (union rio_pw_msg *)pw->msg_buffer);
+					       (union rio_pw_msg *)pw->msg_buffer);
 			pw->msg_wc = 0;
 		}
 		noofpw--;
@@ -1106,6 +1107,7 @@ static struct rio_msg_dme *alloc_message_engine(struct rio_mport *mport,
 
 err:
 	dme_put(me);
+	kfree(me);
 	return ERR_PTR(rc);
 }
 
@@ -1237,7 +1239,7 @@ static int alloc_ob_dme_shared(struct rio_priv *priv,
 	struct rio_mport *mport = priv->mport;
 	struct rio_msg_dme *me = NULL;
 	struct rio_msg_desc *desc = NULL;
-	u32 dw0, dw1, dw2, dw3;
+	u32 dw0 = 0, dw1, dw2, dw3;
 	u64  desc_chn_start = 0;
 	int entries = OB_DME_ENTRIES;
 	int i;
@@ -1363,7 +1365,7 @@ static int open_outb_mbox_static(struct rio_mport *mport,
 	u32 dme_ctrl, dme_stat, desc_addr, wait = 0;
 	u64  desc_chn_start = 0;
 
-	if ((mbox_id < 0) || (mbox_id > RIO_MAX_TX_MBOX) ||
+	if ((mbox_id < 0) || (mbox_id >= RIO_MAX_TX_MBOX) ||
 	    (entries < 2) || (entries > priv->desc_max_entries))
 		return -EINVAL;
 	if (priv->ob_mbox[mbox_id])
@@ -1381,6 +1383,7 @@ static int open_outb_mbox_static(struct rio_mport *mport,
 
 	if (test_bit(RIO_MB_OPEN, &mb->state)) {
 		spin_unlock_irqrestore(&mb->lock, iflags0);
+		kfree(mb);
 		return -EINVAL;
 	}
 
@@ -1774,8 +1777,11 @@ static int open_inb_mbox(struct rio_mport *mport, void *dev_id,
 				break;
 			}
 		}
-		if (rc < 0)
+		if (rc < 0) {
+			kfree(mb);
+
 			return rc;
+		}
 
 		me = alloc_message_engine(mport,
 					  dme_no,
@@ -2226,7 +2232,7 @@ void axxia_close_outb_mbox(struct rio_mport *mport, int mbox_id)
 
 
 	if ((mbox_id < 0) ||
-	    (mbox_id > RIO_MAX_TX_MBOX))
+	    (mbox_id >= RIO_MAX_TX_MBOX))
 		return;
 	mb = priv->ob_mbox[mbox_id];
 	if ((!mb) ||

@@ -10,7 +10,8 @@
  *   the GNU General Public License for more details.
  *
  *   You should have received a copy of the GNU General Public License
- *   along with this program.
+ *   along with this program;  if not, write to the Free Software
+ *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 /* #define IODEBUG */
@@ -843,7 +844,7 @@ void axxia_rio_set_mport_disc_mode(struct rio_mport *mport)
 	 * if we wanted to set the PTPN and PTE=1. */
 
 	/* Set to receive any dist ID for serial RapidIO controller. */
-	if (mport->phy_type == RIO_PHY_SERIAL)
+	if (mport->phys_rmap == RIO_PHY_SERIAL)
 		__rio_local_write_config_32(mport,
 					    EPC_PNPTAACR(mport->port_ndx),
 					    0x00000000);
